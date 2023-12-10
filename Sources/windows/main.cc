@@ -9,6 +9,10 @@
 #include <version>
 #include <dwmapi.h>
 #include <algorithm>
+#include <UIAutomation.h>
+#include <comutil.h>
+#pragma comment(lib, "Oleacc.lib")
+#pragma comment(lib, "comsuppw.lib")
 
 typedef int(__stdcall *lp_GetScaleFactorForMonitor)(HMONITOR, DEVICE_SCALE_FACTOR *);
 
@@ -63,6 +67,62 @@ std::string getWindowTitle(const HWND hwnd) {
 	std::string title = toUtf8(ws);
 
 	return title;
+}
+
+std::string getURLFromChrome(HWND hwnd) {
+    // Get the process ID
+    DWORD processId;
+    GetWindowThreadProcessId(hwnd, &processId);
+
+    // Get a handle to the process
+    HANDLE process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processId);
+
+    // Check if the process is Google Chrome
+    char processName[MAX_PATH];
+    GetModuleFileNameEx(process, 0, processName, MAX_PATH);
+    if (std::string(processName).find("chrome") == std::string::npos) {
+        return "";
+    }
+
+    // Initialize the COM library
+    CoInitialize(NULL);
+
+    // Create the CUIAutomation object
+    IUIAutomation *automation;
+    CoCreateInstance(__uuidof(CUIAutomation), NULL, CLSCTX_INPROC_SERVER, __uuidof(IUIAutomation), (void**)&automation);
+
+    // Get the IUIAutomationElement for the window
+    IUIAutomationElement *root;
+    automation->ElementFromHandle(hwnd, &root);
+
+    // Create a condition for the control type property
+    IUIAutomationCondition *condition;
+    automation->CreatePropertyCondition(UIA_ControlTypePropertyId, CComVariant(UIA_EditControlTypeId), &condition);
+
+    // Find the address bar
+    IUIAutomationElement *addressBar;
+    root->FindFirst(TreeScope_Descendants, condition, &addressBar);
+
+    // Get the value from the address bar
+    BSTR bstr;
+    IValueProvider *valueProvider;
+    addressBar->GetCurrentPatternAs(UIA_ValuePatternId, __uuidof(IValueProvider), (void**)&valueProvider);
+    valueProvider->get_Value(&bstr);
+
+    // Convert the BSTR to a std::string
+    std::string url = _com_util::ConvertBSTRToString(bstr);
+
+    // Clean up
+    SysFreeString(bstr);
+    valueProvider->Release();
+    addressBar->Release();
+    condition->Release();
+    root->Release();
+    automation->Release();
+    CloseHandle(process);
+    CoUninitialize();
+
+    return url;
 }
 
 // Return description from file version info
@@ -209,6 +269,11 @@ Napi::Value getWindowInformation(const HWND &hwnd, const Napi::CallbackInfo &inf
 	activeWinObj.Set(Napi::String::New(env, "owner"), owner);
 	activeWinObj.Set(Napi::String::New(env, "bounds"), bounds);
 	activeWinObj.Set(Napi::String::New(env, "memoryUsage"), memoryCounter.WorkingSetSize);
+
+	std::string url = getURLFromChrome(hwnd);
+	if (!url.empty()) {
+		activeWinObj.Set(Napi::String::New(env, "url"), url);
+	}
 
 	return activeWinObj;
 }
